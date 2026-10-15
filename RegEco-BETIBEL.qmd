@@ -812,10 +812,10 @@ p_import_colored
 ```
 ## Simulation BAU
 
-### Definisi Skenario
+#### Definisi Skenario
 Skenario ini merupakan proyeksi kondisi ekonomi dan lingkungan berdasarkan lintasan *status-quo* (Business As Usual), dengan asumsi tidak ada intervensi kebijakan baru atau perubahan signifikan dalam tata kelola sumber daya hingga tahun 2045.
 
-### Asumsi Pertumbuhan
+#### Asumsi Pertumbuhan
 Pertumbuhan ekonomi untuk sektor non-lahan (*unconstrained*) diproyeksikan menggunakan rata-rata tingkat pertumbuhan ekonomi tahunan masa lalu (berdasarkan data `RateUnconstrained`). Pertumbuhan sektor lahan (*constrained*) dibatasi secara eksogen oleh luasan tutupan lahan.
 
 ```{r bauSkenario, echo = FALSE, warning=FALSE}
@@ -892,7 +892,7 @@ plot_df <- data.frame(
 )
 ```
 
-## PDRB BAU
+### PDRB BAU
 ```{r, pdrbBAU, echo = FALSE, warning=FALSE}
 # ==============================================================================
 # 0. PARAMETER WAKTU SIMULASI (2025-2045)
@@ -1089,7 +1089,7 @@ knitr::kable(
 ```
 
 
-## Serapan TK
+### Serapan TK
 ```{r, tkBAU, echo = FALSE, warning=FALSE}
 # ==============================================================================
 # PROYEKSI SERAPAN TENAGA KERJA (2025–2045)
@@ -1181,7 +1181,7 @@ knitr::kable(
 ```
 
 
-## Total Keuntungan Usaha
+### Total Keuntungan Usaha
 ```{r, kuBAU, echo = FALSE, warning=FALSE}
 # ==============================================================================
 # PROYEKSI TOTAL KEUNTUNGAN USAHA (SURPLUS) (2025–2045)
@@ -1259,7 +1259,7 @@ knitr::kable(
 
 ```
 
-## Keterkaitan SDA dengan sektor lain
+### Keterkaitan SDA dengan sektor lain
 ```{r, keterkaitanBAU, echo = FALSE, warning=FALSE}
 v_constrained <- as.numeric(Constrained)
 v_constrained[is.na(v_constrained)] <- 0
@@ -1322,7 +1322,7 @@ knitr::kable(
 
 ```
 
-## Pendapatan per Kapita
+### Pendapatan per Kapita
 ```{r, incomeBAU, echo = FALSE, warning=FALSE}
 proporsiupahgaji <- sum(upah_gaji, na.rm = TRUE) / sum(pdrb_IO, na.rm = TRUE)
 
@@ -1399,7 +1399,7 @@ knitr::kable(
 
 ```
 
-## Total Pendapatan Tenaga Kerja
+### Total Pendapatan Tenaga Kerja
 ```{r, totIncomeBAU, echo = FALSE, warning=FALSE}
 val_awal_inc  <- df_income_total$income_BAU[df_income_total$Year == thDasar]
 val_akhir_inc <- df_income_total$income_BAU[df_income_total$Year == thAkhir]
@@ -1462,7 +1462,7 @@ knitr::kable(
 ```
 
 
-## Koefisien kebutuhan lahan (LRC)
+### Koefisien kebutuhan lahan (LRC)
 ```{r, lrcBAU, echo = FALSE, warning=FALSE}
 # ==============================================================================
 # PERHITUNGAN KOEFISIEN KEBUTUHAN LAHAN (LRC)
@@ -1527,7 +1527,7 @@ print(p_lrc_bar)
 
 ```
 
-## Proyeksi PDRB dan pertumbuhan berdasakan KSM
+### Proyeksi PDRB dan pertumbuhan berdasakan KSM
 ```{r, ksmBAU, echo = FALSE, warning=FALSE}
 # ==============================================================================
 # AGREGASI PROYEKSI PDRB PER KSM
