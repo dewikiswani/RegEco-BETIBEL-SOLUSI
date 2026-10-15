@@ -115,6 +115,8 @@ LASLahan <- read_excel("LAS_Lahan.xlsx",
                        sheet = "LAS_Lahan",
                        col_names = TRUE)
 
+populasiPenduduk <- read_excel("populasiPenduduk.xlsx", col_names = TRUE)
+
 # SType1 <- read_excel("SType1.xlsx",
 #                      sheet = "SType1",
 #                      col_names = TRUE)
@@ -125,7 +127,7 @@ LASLahan <- read_excel("LAS_Lahan.xlsx",
 #                      sheet = "SType3",
 #                      col_names = TRUE)
 # 
-# populasiPenduduk <- read_excel("populasiPenduduk.xlsx", col_names = TRUE)
+
 
 # populasiPendudukPesisir <- read_excel("populasiPesisir.xlsx", col_names = TRUE)
 
@@ -194,6 +196,7 @@ Leontief_Inverse <- solve(I_minus_A)
 
 #kolom final demand
 fd <- io[1:jml_sektor,kolom_FD]
+fd[is.na(fd)] <- 0
 
 
 #Perkalian Matriks: (I - A)^-1 %*% FD
@@ -234,8 +237,12 @@ LDM_matrix <- as.matrix(LDM[,])
 storage.mode(LDM_matrix) <- "double"
 LR_matrix   <- LDM_matrix %*% Lahan2025_diag
 LR <- rowSums(LR_matrix, na.rm = TRUE)
-LRC <- LR/fd
-LPC <- 1/LRC
+
+LRC <- ifelse(fd > 0, LR / fd, 0)
+LRC[is.na(LRC) | is.infinite(LRC)] <- 0
+
+LPC <- ifelse(LRC > 0, 1 / LRC, 0)
+LPC[is.na(LPC) | is.infinite(LPC)] <- 0
 
 ```
 
@@ -803,7 +810,816 @@ Dari 15 sektor dengan nilai import effect tertinggi, tidak terdapat sektor berba
 p_import_colored
 
 ```
+## Simulation BAU
 
+### Definisi Skenario
+Skenario ini merupakan proyeksi kondisi ekonomi dan lingkungan berdasarkan lintasan *status-quo* (Business As Usual), dengan asumsi tidak ada intervensi kebijakan baru atau perubahan signifikan dalam tata kelola sumber daya hingga tahun 2045.
+
+### Asumsi Pertumbuhan
+Pertumbuhan ekonomi untuk sektor non-lahan (*unconstrained*) diproyeksikan menggunakan rata-rata tingkat pertumbuhan ekonomi tahunan masa lalu (berdasarkan data `RateUnconstrained`). Pertumbuhan sektor lahan (*constrained*) dibatasi secara eksogen oleh luasan tutupan lahan.
+
+```{r bauSkenario, echo = FALSE, warning=FALSE}
+## Ekstrak vector rerata pertumbuhan sektor unconstrained
+rate <- DeskripsiSektor$RateUnconstrained
+rate[is.na(rate)] <- 0 # Mencegah error NA menjadi angka 0
+
+## Buat matrix untuk menyimpan hasil 
+all_steps <- matrix(NA, nrow = jml_sektor, ncol = nThSimulasi)
+current_val <- fd
+
+## Loop untuk menghitung FD scenario sektor unconstrained
+for (i in 1:nThSimulasi) {
+  current_val <- ((current_val * rate) + current_val) * Unconstrained
+  all_steps[, i] <- current_val 
+}
+
+## Memberikan nama kolom pada hasil perhitungan FD scenario (2026-2045)
+colnames(all_steps) <- paste0("FD", tahunSimulasi)
+
+# Tambahkan FD2025 ke dalam matriks baru
+fd_BAU_uncon <- all_steps
+fd_BAU2025 <- fd * Unconstrained
+fd_BAU_uncon <- cbind(fd_BAU2025, fd_BAU_uncon)
+colnames(fd_BAU_uncon)[1] <- idFDThDasar
+
+# Ekstrak data luasan tutupan lahan dari hasil simulasi BAU
+BAUArea <- as.matrix(BAULahan[, (ncol(BAULahan) - nThSimulasi):ncol(BAULahan)])
+storage.mode(BAUArea) <- "double"
+
+# Persiapkan data LDM dan LPC
+# CATATAN: Pastikan LDM_matrix ini hanya berisi angka (hapus kolom ID/Nama jika ada)
+LDM_matrix_calc <- as.matrix(LDM_matrix) 
+LPC_calc        <- as.numeric(LPC)
+LPC_calc[is.na(LPC_calc) | is.infinite(LPC_calc)] <- 0
+Con_calc        <- as.numeric(Constrained)
+
+# Loop untuk menghitung total area sektor dan Final Demand BAU untuk sektor Constrained
+final_results_con <- matrix(NA, nrow = nrow(LDM_matrix_calc), ncol = ncol(BAUArea))
+
+for (i in 1:ncol(BAUArea)) {
+  r_sums <- as.vector(LDM_matrix_calc %*% BAUArea[, i])
+  step_res <- r_sums * LPC_calc * Con_calc
+  step_res[is.nan(step_res) | is.na(step_res)] <- 0
+  final_results_con[, i] <- step_res
+}
+
+# Gabungkan FD Constrained dan Unconstrained
+colnames(final_results_con) <- colnames(BAUArea)
+fd_BAU_con <- final_results_con
+fd_BAU <- fd_BAU_con + fd_BAU_uncon
+
+# Loop untuk menghitung total PDRB hasil simulasi BAU
+pdrb_BAU_matrix <- matrix(NA, nrow = nrow(fd_BAU), ncol = ncol(fd_BAU))
+
+for (i in 1:ncol(fd_BAU)) {
+  r_sums <- as.vector(Leontief_Inverse %*% fd_BAU[, i])
+  step_res <- r_sums * ntbProp
+  # Pembersihan paksa NaN dan Inf sebelum masuk matriks PDRB
+  step_res[is.nan(step_res) | is.na(step_res) | is.infinite(step_res)] <- 0
+  pdrb_BAU_matrix[, i] <- step_res
+}
+
+# Beri nama kolom matriks PDRB
+colnames(pdrb_BAU_matrix) <- colnames(BAUArea)
+pdrb_BAU <- pdrb_BAU_matrix
+
+# Hitung Total PDRB Keseluruhan per Tahun
+pdrb_BAU_total <- colSums(pdrb_BAU)
+
+plot_df <- data.frame(
+  Year = rangeTahun,
+  pdrb_BAU = pdrb_BAU_total
+)
+```
+
+## PDRB BAU
+```{r, pdrbBAU, echo = FALSE, warning=FALSE}
+# ==============================================================================
+# 0. PARAMETER WAKTU SIMULASI (2025-2045)
+# ==============================================================================
+n_tahun    <- thAkhir - thDasar  # 20 tahun untuk perhitungan CAGR
+
+# ==============================================================================
+# 1. TABEL PDRB BAU & EXPORT EXCEL
+# ==============================================================================
+final_pdrb <- plot_df
+
+# Cetak Tabel PDRB BAU
+knitr::kable(
+  final_pdrb,
+  row.names = FALSE,
+  caption = sprintf("Proyeksi Produk Domestik Regional Bruto (PDRB): Skenario BAU (%d–%d) (Juta Rupiah)", thDasar, thAkhir),
+  digits = 2,
+  format.args = list(big.mark = ".", decimal.mark = ","),
+  col.names = c("Tahun", "PDRB BAU (Juta Rp)"),
+  align = c("c", "r")
+) %>%
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  )
+
+# ==============================================================================
+# 2. GRAFIK GARIS PROYEKSI PDRB BAU DENGAN CALLOUT LABELS
+# ==============================================================================
+# Ekstrak nilai awal dan akhir untuk label
+val_awal  <- plot_df$pdrb_BAU[plot_df$Year == thDasar]
+val_akhir <- plot_df$pdrb_BAU[plot_df$Year == thAkhir]
+
+# Format angka dengan pemisah ribuan
+lbl_awal  <- comma(round(val_awal, 0), big.mark = ".", decimal.mark = ",")
+lbl_akhir <- comma(round(val_akhir, 0), big.mark = ".", decimal.mark = ",")
+
+# Penyesuaian offset posisi label Y dinamis
+y_range  <- max(plot_df$pdrb_BAU) - min(plot_df$pdrb_BAU)
+y_offset <- y_range * 0.12
+
+hasil_simulasi_label <- ggplot(plot_df, aes(x = Year, y = pdrb_BAU)) +
+  # Garis & Titik Skenario BAU
+  geom_line(color = "#D95F02", linewidth = 1.2) +
+  geom_point(color = "#D95F02", size = 2.5) +
+
+  # Garis Penunjuk Callout
+  annotate("segment", x = thDasar + 0.2, xend = thDasar + 2.8, y = val_awal, yend = val_awal + y_offset, color = "gray40", linewidth = 0.6) +
+  annotate("segment", x = thAkhir - 0.2, xend = thAkhir - 2.8, y = val_akhir, yend = val_akhir - y_offset, color = "gray40", linewidth = 0.6) +
+
+  # Kotak Label bergaya Excel
+  annotate("label", x = thDasar + 3.5, y = val_awal + y_offset * 1.05, label = paste0(thDasar, ": Rp ", lbl_awal, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.8, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 3.5, y = val_akhir - y_offset * 1.05, label = paste0(thAkhir, ": Rp ", lbl_akhir, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.8, label.padding = unit(0.4, "lines")) +
+
+  # Skala & Format Sumbu
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+
+  # Judul & Label Sumbu
+  labs(
+    title = sprintf("Proyeksi PDRB Wilayah BETIBEL: Skenario BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun",
+    y = "Total PDRB (Juta Rupiah)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(color = "black")
+  )
+
+# Tampilkan Grafik PDRB
+print(hasil_simulasi_label)
+
+# ==============================================================================
+# 3. RINCIAN PDRB BERDASARKAN KELOMPOK SEKTOR (LAHAN vs NON-LAHAN vs TOTAL)
+# ==============================================================================
+v_las <- as.numeric(Constrained)
+v_las[is.na(v_las)] <- 0
+v_lainnya <- 1 - v_las
+
+# Fungsi agregasi PDRB
+hitung_pdrb_kelompok <- function(matriks_pdrb) {
+  pdrb_las     <- colSums(matriks_pdrb[v_las == 1, , drop = FALSE])
+  pdrb_lainnya <- colSums(matriks_pdrb[v_lainnya == 1, , drop = FALSE])
+  pdrb_total   <- colSums(matriks_pdrb)
+  return(list(Lahan = pdrb_las, Non_Lahan = pdrb_lainnya, Total = pdrb_total))
+}
+
+# Hitung kelompok untuk BAU
+res_BAU <- hitung_pdrb_kelompok(pdrb_BAU)
+
+# ==============================================================================
+# 4. LAJU PERTUMBUHAN TAHUNAN RATA-RATA (CAGR 2025–2045)
+# ==============================================================================
+calc_cagr <- function(vec_pdrb, idx_start = as.character(thDasar), idx_end = as.character(thAkhir), n_yrs = n_tahun) {
+  val_start <- vec_pdrb[idx_start]
+  val_end   <- vec_pdrb[idx_end]
+  cagr      <- ((val_end / val_start)^(1 / n_yrs) - 1) * 100
+  return(as.numeric(cagr))
+}
+
+cagr_data_bau <- data.frame(
+  Group  = factor(c("Sektor Lahan", "Sektor Non-Lahan", "Total Ekonomi"),
+                  levels = c("Sektor Lahan", "Sektor Non-Lahan", "Total Ekonomi")),
+  Growth = c(
+    calc_cagr(res_BAU$Lahan),
+    calc_cagr(res_BAU$Non_Lahan),
+    calc_cagr(res_BAU$Total)
+  )
+)
+
+# ==============================================================================
+# 5. GRAFIK BATANG: LAJU PERTUMBUHAN SEKTORAL BAU
+# ==============================================================================
+p_bar_growth_bau <- ggplot(cagr_data_bau, aes(x = Group, y = Growth, fill = Group)) +
+  geom_bar(stat = "identity", width = 0.5, show.legend = FALSE) +
+  geom_text(
+    aes(label = sprintf("%.2f%%", Growth)),
+    vjust = -0.5,
+    fontface = "bold",
+    size = 4,
+    color = "black"
+  ) +
+  scale_y_continuous(
+    labels = function(x) paste0(format(x, nsmall = 1, decimal.mark=","), "%"),
+    expand = expansion(mult = c(0, 0.2))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Sektor Lahan"     = "#E69F00",
+      "Sektor Non-Lahan" = "#56B4E9",
+      "Total Ekonomi"    = "#4178BE"
+    )
+  ) +
+  labs(
+    title = sprintf("Laju Pertumbuhan Tahunan Rata-Rata (CAGR %d–%d): Skenario BAU", thDasar, thAkhir),
+    x = NULL,
+    y = "Pertumbuhan Tahunan (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 13, color = "gray20"),
+    axis.text.x = element_text(face = "bold", size = 11, color = "gray20"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+print(p_bar_growth_bau)
+
+# ==============================================================================
+# 6. TABEL RINGKASAN INDIKATOR PDRB BAU
+# ==============================================================================
+pdrb_awal  <- res_BAU$Total[as.character(thDasar)]
+pdrb_akhir <- res_BAU$Total[as.character(thAkhir)]
+cagr_bau   <- calc_cagr(res_BAU$Total)
+
+df_ringkasan_bau <- data.frame(
+  Indikator = c(
+    sprintf("Total PDRB BAU Tahun %d", thDasar),
+    sprintf("Total PDRB BAU Tahun %d", thAkhir),
+    sprintf("Pertumbuhan Kumulatif (%d–%d)", thDasar, thAkhir),
+    sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d)", thDasar, thAkhir),
+    sprintf("Pertumbuhan Sektor Lahan (CAGR %d–%d)", thDasar, thAkhir),
+    sprintf("Pertumbuhan Sektor Non-Lahan (CAGR %d–%d)", thDasar, thAkhir)
+  ),
+  Nilai = c(
+    sprintf("Rp %s Juta", comma(round(pdrb_awal, 2), big.mark=".", decimal.mark=",")),
+    sprintf("Rp %s Juta", comma(round(pdrb_akhir, 2), big.mark=".", decimal.mark=",")),
+    sprintf("+%.2f%%", ((pdrb_akhir - pdrb_awal) / pdrb_awal) * 100),
+    sprintf("%.2f%% per tahun", cagr_bau),
+    sprintf("%.2f%% per tahun", calc_cagr(res_BAU$Lahan)),
+    sprintf("%.2f%% per tahun", calc_cagr(res_BAU$Non_Lahan))
+  )
+)
+
+knitr::kable(
+  df_ringkasan_bau,
+  row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator PDRB BAU Wilayah BETIBEL (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"),
+  align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;") %>%
+  kableExtra::row_spec(4, bold = TRUE, background = "#EAEAEA")
+```
+
+
+## Serapan TK
+```{r, tkBAU, echo = FALSE, warning=FALSE}
+# ==============================================================================
+# PROYEKSI SERAPAN TENAGA KERJA (2025–2045)
+# ==============================================================================
+# Rata-rata Pengganda Tenaga Kerja
+mean_lab_multiplier <- mean(tabel_multiplier_sektoral$Labour_Effect, na.rm = TRUE)
+
+# Baseline TK Tahun Dasar
+TK_baseline <- sum(DeskripsiSektor$TenagaKerja, na.rm = TRUE)
+
+# Selisih PDRB Tahunan
+grp_diff <- c(0, diff(plot_df$pdrb_BAU))
+
+# Hitung Tambahan TK dan Akumulasi
+additional_jobs <- grp_diff * mean_lab_multiplier
+employment_proj <- TK_baseline + cumsum(additional_jobs)
+
+df_employment_projection <- data.frame(
+  Tahun = plot_df$Year,
+  Proyeksi_TenagaKerja_Orang = round(employment_proj, 0)
+)
+
+write_xlsx(df_employment_projection, "Final_TK_BAU_BETIBEL.xlsx")
+
+# Ekstrak nilai awal dan akhir untuk label grafik
+val_awal_tk  <- df_employment_projection$Proyeksi_TenagaKerja_Orang[df_employment_projection$Tahun == thDasar]
+val_akhir_tk <- df_employment_projection$Proyeksi_TenagaKerja_Orang[df_employment_projection$Tahun == thAkhir]
+
+lbl_awal_tk  <- comma(round(val_awal_tk, 0), big.mark = ".", decimal.mark = ",")
+lbl_akhir_tk <- comma(round(val_akhir_tk, 0), big.mark = ".", decimal.mark = ",")
+
+y_range_tk  <- max(df_employment_projection$Proyeksi_TenagaKerja_Orang) - min(df_employment_projection$Proyeksi_TenagaKerja_Orang)
+y_offset_tk <- ifelse(y_range_tk == 0, val_awal_tk * 0.1, y_range_tk * 0.12)
+
+# Grafik Garis Serapan Tenaga Kerja dengan Label Callout
+p_employment_proj <- ggplot(df_employment_projection, aes(x = Tahun, y = Proyeksi_TenagaKerja_Orang)) +
+  geom_line(color = "#1565C0", linewidth = 1.2) +
+  geom_point(color = "#1565C0", size = 2.5) +
+  
+  # Garis Penunjuk Callout
+  annotate("segment", x = thDasar + 0.2, xend = thDasar + 2.8, y = val_awal_tk, yend = val_awal_tk + y_offset_tk, color = "gray40", linewidth = 0.6) +
+  annotate("segment", x = thAkhir - 0.2, xend = thAkhir - 2.8, y = val_akhir_tk, yend = val_akhir_tk - y_offset_tk, color = "gray40", linewidth = 0.6) +
+  
+  # Kotak Label
+  annotate("label", x = thDasar + 3.5, y = val_awal_tk + y_offset_tk * 1.05, label = paste0(thDasar, ": ", lbl_awal_tk, " Orang"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 3.5, y = val_akhir_tk - y_offset_tk * 1.05, label = paste0(thAkhir, ": ", lbl_akhir_tk, " Orang"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(
+    title = sprintf("Proyeksi Serapan Tenaga Kerja Skenario BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun", y = "Total Tenaga Kerja (Orang)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14), panel.grid.minor = element_blank())
+
+print(p_employment_proj)
+
+# Tabel Ringkasan Serapan TK
+cagr_tk <- ((val_akhir_tk / val_awal_tk)^(1 / n_tahun) - 1) * 100
+
+df_ringkasan_tk <- data.frame(
+  Indikator = c(
+    sprintf("Total Tenaga Kerja Tahun %d", thDasar),
+    sprintf("Total Tenaga Kerja Tahun %d", thAkhir),
+    sprintf("Tambahan Lapangan Kerja Baru (%d–%d)", thDasar, thAkhir),
+    sprintf("Pertumbuhan Kumulatif (%d–%d)", thDasar, thAkhir),
+    sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d)", thDasar, thAkhir)
+  ),
+  Nilai = c(
+    sprintf("%s Orang", lbl_awal_tk),
+    sprintf("%s Orang", lbl_akhir_tk),
+    sprintf("%s Orang", comma(round(val_akhir_tk - val_awal_tk, 0), big.mark=".", decimal.mark=",")),
+    sprintf("+%.2f%%", ((val_akhir_tk - val_awal_tk) / val_awal_tk) * 100),
+    sprintf("%.2f%% per tahun", cagr_tk)
+  )
+)
+
+knitr::kable(
+  df_ringkasan_tk, row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator Serapan Tenaga Kerja BAU (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"), align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;") %>%
+  kableExtra::row_spec(5, bold = TRUE, background = "#EAEAEA")
+```
+
+
+## Total Keuntungan Usaha
+```{r, kuBAU, echo = FALSE, warning=FALSE}
+# ==============================================================================
+# PROYEKSI TOTAL KEUNTUNGAN USAHA (SURPLUS) (2025–2045)
+# ==============================================================================
+surplus <- as.numeric(io[baris_surplus, kolom_Sektor])
+surplus[is.na(surplus)] <- 0
+propSurplus <- sum(surplus) / sum(pdrb_IO)
+
+final_surplus <- plot_df %>%
+  rename(surplus_BAU = pdrb_BAU) %>%
+  mutate(surplus_BAU = surplus_BAU * propSurplus)
+
+write_xlsx(final_surplus, "Final_Surplus_BAU_BETIBEL.xlsx")
+
+# Ekstrak nilai awal dan akhir
+val_awal_ku  <- final_surplus$surplus_BAU[final_surplus$Year == thDasar]
+val_akhir_ku <- final_surplus$surplus_BAU[final_surplus$Year == thAkhir]
+
+lbl_awal_ku  <- comma(round(val_awal_ku, 0), big.mark = ".", decimal.mark = ",")
+lbl_akhir_ku <- comma(round(val_akhir_ku, 0), big.mark = ".", decimal.mark = ",")
+
+y_range_ku  <- max(final_surplus$surplus_BAU) - min(final_surplus$surplus_BAU)
+y_offset_ku <- y_range_ku * 0.12
+
+# Grafik Keuntungan Usaha
+p_ku_proj <- ggplot(final_surplus, aes(x = Year, y = surplus_BAU)) +
+  geom_line(color = "#4178BE", linewidth = 1.2) +
+  geom_point(color = "#4178BE", size = 2.5) +
+  
+  annotate("segment", x = thDasar + 0.2, xend = thDasar + 2.8, y = val_awal_ku, yend = val_awal_ku + y_offset_ku, color = "gray40", linewidth = 0.6) +
+  annotate("segment", x = thAkhir - 0.2, xend = thAkhir - 2.8, y = val_akhir_ku, yend = val_akhir_ku - y_offset_ku, color = "gray40", linewidth = 0.6) +
+  
+  annotate("label", x = thDasar + 3.5, y = val_awal_ku + y_offset_ku * 1.05, label = paste0(thDasar, ": Rp ", lbl_awal_ku, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 3.5, y = val_akhir_ku - y_offset_ku * 1.05, label = paste0(thAkhir, ": Rp ", lbl_akhir_ku, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(
+    title = sprintf("Proyeksi Total Keuntungan Usaha BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun", y = "Surplus Usaha (Juta Rp)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14), panel.grid.minor = element_blank())
+
+print(p_ku_proj)
+
+# Tabel Ringkasan Keuntungan Usaha
+cagr_ku <- ((val_akhir_ku / val_awal_ku)^(1 / n_tahun) - 1) * 100
+
+df_ringkasan_ku <- data.frame(
+  Indikator = c(
+    sprintf("Total Keuntungan Usaha Tahun %d", thDasar),
+    sprintf("Total Keuntungan Usaha Tahun %d", thAkhir),
+    sprintf("Pertumbuhan Kumulatif (%d–%d)", thDasar, thAkhir),
+    sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d)", thDasar, thAkhir)
+  ),
+  Nilai = c(
+    sprintf("Rp %s Juta", lbl_awal_ku),
+    sprintf("Rp %s Juta", lbl_akhir_ku),
+    sprintf("+%.2f%%", ((val_akhir_ku - val_awal_ku) / val_awal_ku) * 100),
+    sprintf("%.2f%% per tahun", cagr_ku)
+  )
+)
+
+knitr::kable(
+  df_ringkasan_ku, row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator Keuntungan Usaha BAU (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"), align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;") %>%
+  kableExtra::row_spec(4, bold = TRUE, background = "#EAEAEA")
+
+```
+
+## Keterkaitan SDA dengan sektor lain
+```{r, keterkaitanBAU, echo = FALSE, warning=FALSE}
+v_constrained <- as.numeric(Constrained)
+v_constrained[is.na(v_constrained)] <- 0
+
+# Rata-rata ITFL sektor Lahan di BAU
+itfl_bau_sda <- mean(tabel_multiplier_sektoral$ITFL[v_constrained == 1], na.rm = TRUE)
+
+df_rerata_ITFL <- data.frame(
+  Tahun = rangeTahun,
+  ITFL_BAU = rep(itfl_bau_sda, length(rangeTahun))
+)
+
+val_awal_itfl  <- df_rerata_ITFL$ITFL_BAU[df_rerata_ITFL$Tahun == thDasar]
+val_akhir_itfl <- df_rerata_ITFL$ITFL_BAU[df_rerata_ITFL$Tahun == thAkhir]
+lbl_awal_itfl  <- comma(round(val_awal_itfl, 4), big.mark = ".", decimal.mark = ",")
+
+# Margin grafik khusus konstan
+y_offset_itfl <- val_awal_itfl * 0.005
+
+p_itfl_proj <- ggplot(df_rerata_ITFL, aes(x = Tahun, y = ITFL_BAU)) +
+  geom_line(color = "#D95F02", linewidth = 1.2) +
+  geom_point(color = "#D95F02", size = 2.5) +
+  
+  annotate("label", x = thDasar + 2, y = val_awal_itfl + y_offset_itfl, label = paste0(thDasar, ": ", lbl_awal_itfl),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 2, y = val_akhir_itfl + y_offset_itfl, label = paste0(thAkhir, ": ", lbl_awal_itfl),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ","), limits = c(val_awal_itfl * 0.98, val_awal_itfl * 1.02)) +
+  labs(
+    title = sprintf("Rerata ITFL Sektor SDA Konstan Skenario BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun", y = "Indeks Total Forward Linkage (ITFL)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14), panel.grid.minor = element_blank())
+
+print(p_itfl_proj)
+
+df_ringkasan_itfl <- data.frame(
+  Indikator = c(
+    sprintf("Rata-rata ITFL SDA Tahun %d", thDasar),
+    sprintf("Rata-rata ITFL SDA Tahun %d", thAkhir),
+    "Status Perubahan"
+  ),
+  Nilai = c(
+    lbl_awal_itfl,
+    lbl_awal_itfl,
+    "Konstan / Statis (Tidak ada Intervensi)"
+  )
+)
+
+knitr::kable(
+  df_ringkasan_itfl, row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator Keterkaitan SDA BAU (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"), align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;")
+
+```
+
+## Pendapatan per Kapita
+```{r, incomeBAU, echo = FALSE, warning=FALSE}
+proporsiupahgaji <- sum(upah_gaji, na.rm = TRUE) / sum(pdrb_IO, na.rm = TRUE)
+
+df_income_total <- plot_df %>%
+  rename(income_BAU = pdrb_BAU) %>%
+  mutate(income_BAU = income_BAU * proporsiupahgaji)
+
+df_populasi <- populasiPenduduk
+
+df_income_kapita <- df_income_total %>%
+  left_join(df_populasi, by = "Year") %>%
+  mutate(incomekapita_BAU = income_BAU / Populasi)
+
+write_xlsx(df_income_kapita, "Final_IncomePerKapita_BAU_BETIBEL.xlsx")
+
+val_awal_cap  <- df_income_kapita$incomekapita_BAU[df_income_kapita$Year == thDasar]
+val_akhir_cap <- df_income_kapita$incomekapita_BAU[df_income_kapita$Year == thAkhir]
+
+# Mengubah dari Juta Rp menjadi Rupiah Absolut untuk estetika label yang lebih jelas
+lbl_awal_cap  <- comma(round(val_awal_cap * 1000000, 0), big.mark = ".", decimal.mark = ",")
+lbl_akhir_cap <- comma(round(val_akhir_cap * 1000000, 0), big.mark = ".", decimal.mark = ",")
+
+y_range_cap  <- max(df_income_kapita$incomekapita_BAU) - min(df_income_kapita$incomekapita_BAU)
+y_offset_cap <- y_range_cap * 0.12
+
+p_kapita_proj <- ggplot(df_income_kapita, aes(x = Year, y = incomekapita_BAU)) +
+  geom_line(color = "#8E44AD", linewidth = 1.2) +
+  geom_point(color = "#8E44AD", size = 2.5) +
+  
+  annotate("segment", x = thDasar + 0.2, xend = thDasar + 2.8, y = val_awal_cap, yend = val_awal_cap + y_offset_cap, color = "gray40", linewidth = 0.6) +
+  annotate("segment", x = thAkhir - 0.2, xend = thAkhir - 2.8, y = val_akhir_cap, yend = val_akhir_cap - y_offset_cap, color = "gray40", linewidth = 0.6) +
+  
+  annotate("label", x = thDasar + 3.5, y = val_awal_cap + y_offset_cap * 1.05, label = paste0(thDasar, ": Rp ", lbl_awal_cap, "/Jiwa"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 3.5, y = val_akhir_cap - y_offset_cap * 1.05, label = paste0(thAkhir, ": Rp ", lbl_akhir_cap, "/Jiwa"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(
+    title = sprintf("Proyeksi Pendapatan Per Kapita BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun", y = "Pendapatan Per Kapita (Juta Rp / Jiwa)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14), panel.grid.minor = element_blank())
+
+print(p_kapita_proj)
+
+cagr_cap <- ((val_akhir_cap / val_awal_cap)^(1 / n_tahun) - 1) * 100
+
+df_ringkasan_cap <- data.frame(
+  Indikator = c(
+    sprintf("Pendapatan Per Kapita %d", thDasar),
+    sprintf("Pendapatan Per Kapita %d", thAkhir),
+    sprintf("Pertumbuhan Kumulatif (%d–%d)", thDasar, thAkhir),
+    sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d)", thDasar, thAkhir)
+  ),
+  Nilai = c(
+    sprintf("Rp %s", lbl_awal_cap),
+    sprintf("Rp %s", lbl_akhir_cap),
+    sprintf("+%.2f%%", ((val_akhir_cap - val_awal_cap) / val_awal_cap) * 100),
+    sprintf("%.2f%% per tahun", cagr_cap)
+  )
+)
+
+knitr::kable(
+  df_ringkasan_cap, row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator Pendapatan Per Kapita BAU (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"), align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;") %>%
+  kableExtra::row_spec(4, bold = TRUE, background = "#EAEAEA")
+
+```
+
+## Total Pendapatan Tenaga Kerja
+```{r, totIncomeBAU, echo = FALSE, warning=FALSE}
+val_awal_inc  <- df_income_total$income_BAU[df_income_total$Year == thDasar]
+val_akhir_inc <- df_income_total$income_BAU[df_income_total$Year == thAkhir]
+
+lbl_awal_inc  <- comma(round(val_awal_inc, 0), big.mark = ".", decimal.mark = ",")
+lbl_akhir_inc <- comma(round(val_akhir_inc, 0), big.mark = ".", decimal.mark = ",")
+
+y_range_inc  <- max(df_income_total$income_BAU) - min(df_income_total$income_BAU)
+y_offset_inc <- y_range_inc * 0.12
+
+p_income_proj <- ggplot(df_income_total, aes(x = Year, y = income_BAU)) +
+  geom_line(color = "#C0392B", linewidth = 1.2) +
+  geom_point(color = "#C0392B", size = 2.5) +
+  
+  annotate("segment", x = thDasar + 0.2, xend = thDasar + 2.8, y = val_awal_inc, yend = val_awal_inc + y_offset_inc, color = "gray40", linewidth = 0.6) +
+  annotate("segment", x = thAkhir - 0.2, xend = thAkhir - 2.8, y = val_akhir_inc, yend = val_akhir_inc - y_offset_inc, color = "gray40", linewidth = 0.6) +
+  
+  annotate("label", x = thDasar + 3.5, y = val_awal_inc + y_offset_inc * 1.05, label = paste0(thDasar, ": Rp ", lbl_awal_inc, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+  annotate("label", x = thAkhir - 3.5, y = val_akhir_inc - y_offset_inc * 1.05, label = paste0(thAkhir, ": Rp ", lbl_akhir_inc, " Juta"),
+           fontface = "bold", fill = "#EAEAEA", color = "black", size = 3.5, label.padding = unit(0.4, "lines")) +
+
+  scale_x_continuous(breaks = seq(thDasar, thAkhir, by = 5)) +
+  scale_y_continuous(labels = label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(
+    title = sprintf("Proyeksi Total Pendapatan Tenaga Kerja BAU (%d–%d)", thDasar, thAkhir),
+    x = "Tahun", y = "Total Pendapatan / Upah (Juta Rp)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 14), panel.grid.minor = element_blank())
+
+print(p_income_proj)
+
+cagr_inc <- ((val_akhir_inc / val_awal_inc)^(1 / n_tahun) - 1) * 100
+
+df_ringkasan_inc <- data.frame(
+  Indikator = c(
+    sprintf("Total Pendapatan TK Tahun %d", thDasar),
+    sprintf("Total Pendapatan TK Tahun %d", thAkhir),
+    sprintf("Pertumbuhan Kumulatif (%d–%d)", thDasar, thAkhir),
+    sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d)", thDasar, thAkhir)
+  ),
+  Nilai = c(
+    sprintf("Rp %s Juta", lbl_awal_inc),
+    sprintf("Rp %s Juta", lbl_akhir_inc),
+    sprintf("+%.2f%%", ((val_akhir_inc - val_awal_inc) / val_awal_inc) * 100),
+    sprintf("%.2f%% per tahun", cagr_inc)
+  )
+)
+
+knitr::kable(
+  df_ringkasan_inc, row.names = FALSE,
+  caption = sprintf("Ringkasan Indikator Pendapatan Tenaga Kerja BAU (%d–%d)", thDasar, thAkhir),
+  col.names = c("Parameter Indikator", "Nilai Simulasi BAU"), align = c("l", "r")
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE, position = "center") %>%
+  kableExtra::row_spec(0, bold = TRUE, extra_css = "border-top: 2px solid #ccc; border-bottom: 2px solid #ccc;") %>%
+  kableExtra::row_spec(4, bold = TRUE, background = "#EAEAEA")
+
+```
+
+
+## Koefisien kebutuhan lahan (LRC)
+```{r, lrcBAU, echo = FALSE, warning=FALSE}
+# ==============================================================================
+# PERHITUNGAN KOEFISIEN KEBUTUHAN LAHAN (LRC)
+# ==============================================================================
+# LRC = Luas Lahan / Permintaan Akhir (ha / Juta Rp)
+
+v_constrained <- as.numeric(DeskripsiSektor$Constrained)
+v_constrained[is.na(v_constrained)] <- 0
+
+# Hitung LRC
+lrc_vec <- ifelse(fd > 0 & LR > 0, LR / fd, 0)
+lrc_vec[is.na(lrc_vec) | is.nan(lrc_vec) | is.infinite(lrc_vec)] <- 0
+
+# Hitung LPC (Produktivitas)
+lpc_vec <- ifelse(lrc_vec > 0, 1 / lrc_vec, 0)
+
+df_lrc_constrained <- data.frame(
+  Kode_Sektor = kolom_Sektor,
+  Nama_Sektor = namaSektor,
+  NamaPendek  = DeskripsiSektor$NamaPendek,
+  Luas_Lahan_ha = round(LR, 2),
+  PermintaanAkhir_JutaRp = round(fd, 2),
+  LRC_ha_per_JutaRp = round(lrc_vec, 2),
+  LPC_JutaRp_per_ha = round(lpc_vec, 6),
+  Constrained = v_constrained,
+  stringsAsFactors = FALSE
+) %>%
+  filter(Constrained == 1) %>%               # Hanya sektor lahan
+  filter(LRC_ha_per_JutaRp > 0)              # Hanya nilai positif
+
+# Grafik Batang LRC
+p_lrc_bar <- ggplot(df_lrc_constrained, aes(x = reorder(NamaPendek, LRC_ha_per_JutaRp), y = LRC_ha_per_JutaRp)) +
+  geom_col(fill = "#2E7D32", width = 0.7) +
+  geom_text(
+    aes(label = comma(round(LRC_ha_per_JutaRp, 2), decimal.mark=",")),
+    hjust = -0.15,
+    size = 3.5,
+    fontface = "bold",
+    color = "gray15"
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = label_number(big.mark = ".", decimal.mark = ","),
+    expand = expansion(mult = c(0, 0.25))
+  ) +
+  labs(
+    title = "Koefisien Kebutuhan Lahan (LRC) - Sektor Berbasis Lahan",
+    subtitle = "Kebutuhan Luas Lahan per Unit Permintaan Akhir (ha / Juta Rupiah)",
+    x = NULL,
+    y = "LRC (ha / Juta Rupiah)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13, color = "#1B5E20", hjust = 0),
+    plot.subtitle = element_text(size = 10, color = "gray30", hjust = 0),
+    axis.text.y   = element_text(size = 9.5, color = "black", face = "bold"),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_lrc_bar)
+
+```
+
+## Proyeksi PDRB dan pertumbuhan berdasakan KSM
+```{r, ksmBAU, echo = FALSE, warning=FALSE}
+# ==============================================================================
+# AGREGASI PROYEKSI PDRB PER KSM
+# ==============================================================================
+ksm_groups <- DeskripsiSektor$KSM
+pdrb_BAU_df <- as.data.frame(pdrb_BAU)
+pdrb_BAU_df$KSM <- ksm_groups
+
+grp_ksm_yearly <- pdrb_BAU_df %>%
+  group_by(KSM) %>%
+  summarise(across(everything(), sum, na.rm = TRUE))
+
+df_ksm_summary <- grp_ksm_yearly %>%
+  select(KSM, PDRB_Dasar = as.character(thDasar), PDRB_Akhir = as.character(thAkhir)) %>%
+  mutate(
+    CAGR_Percent = ifelse(PDRB_Dasar > 0, ((PDRB_Akhir / PDRB_Dasar)^(1 / n_tahun) - 1) * 100, 0),
+    CAGR_Percent = ifelse(is.na(CAGR_Percent) | is.infinite(CAGR_Percent), 0, CAGR_Percent)
+  )
+
+# ==============================================================================
+# GRAFIK PERBANDINGAN PDRB KSM (Tahun Dasar vs Akhir)
+# ==============================================================================
+df_ksm_long <- df_ksm_summary %>%
+  pivot_longer(cols = c(PDRB_Dasar, PDRB_Akhir), names_to = "Year", values_to = "PDRB") %>%
+  filter(PDRB > 0) %>%
+  mutate(
+    Year_Label = ifelse(Year == "PDRB_Dasar", paste0(thDasar, " (Awal)"), paste0(thAkhir, " (Proyeksi)")),
+    Year_Label = factor(Year_Label, levels = c(paste0(thDasar, " (Awal)"), paste0(thAkhir, " (Proyeksi)")))
+  )
+
+p_bar_grp_comparison <- ggplot(df_ksm_long, aes(x = reorder(KSM, PDRB), y = PDRB, fill = Year_Label)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(
+    aes(label = comma(round(PDRB, 1), big.mark=".", decimal.mark=","), color = Year_Label),
+    position = position_dodge(width = 0.8),
+    hjust = -0.15, vjust = 0.4, size = 3.2, fontface = "bold", show.legend = FALSE
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("#56B4E9", "#1F4E79")) +
+  scale_color_manual(values = c("#2c729e", "#1F4E79")) +
+  scale_y_continuous(
+    labels = label_number(big.mark = ".", decimal.mark = ","), 
+    expand = expansion(mult = c(0, 0.3))
+  ) +
+  labs(
+    title = sprintf("Perbandingan PDRB per Kategori Sektor Makro (%d vs %d)", thDasar, thAkhir),
+    subtitle = "Skenario BAU (Juta Rupiah)",
+    x = NULL, y = "Total PDRB (Juta Rupiah)", fill = "Tahun Simulasi"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title         = element_text(face = "bold", size = 13, color = "#1F4E79", hjust = 0),
+    axis.text.y        = element_text(size = 9, face = "bold", color = "black"),
+    legend.position    = "bottom",
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_line(color = "gray85", linetype = "dashed"),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.5)
+  )
+
+print(p_bar_grp_comparison)
+
+# ==============================================================================
+# GRAFIK PERTUMBUHAN CAGR PER KSM
+# ==============================================================================
+p_bar_cagr_ksm <- ggplot(df_ksm_summary, aes(x = reorder(KSM, CAGR_Percent), y = CAGR_Percent)) +
+  geom_col(fill = "#2E7D32", width = 0.65) +
+  geom_text(
+    aes(label = sprintf("%.2f%%", CAGR_Percent)),
+    hjust = -0.15, size = 3.5, fontface = "bold", color = "black"
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = function(x) paste0(format(x, nsmall = 1, decimal.mark=","), "%"),
+    expand = expansion(mult = c(0, 0.25))
+  ) +
+  labs(
+    title = sprintf("Laju Pertumbuhan Rata-Rata (CAGR %d–%d) per KSM", thDasar, thAkhir),
+    subtitle = "Performa Pertumbuhan Relatif antar Kategori Sektor Makro",
+    x = NULL, y = "Laju Pertumbuhan Tahunan (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 13, color = "#1B5E20", hjust = 0),
+    axis.text.y      = element_text(size = 9, face = "bold", color = "black"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+
+print(p_bar_cagr_ksm)
+```
+
+## IMLaS 1,2,3 
 <!-- ## Simulation BAU -->
 
 <!-- ### Definisi -->
